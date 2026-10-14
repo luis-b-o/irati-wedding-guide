@@ -12,30 +12,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Baixar a página de impressão
+      - uses: actions/checkout@v5
+      - name: Comparar a página de impressão com a página da lista
         run: |
-          u='https://www.listapresentes.lojasafubra.com.br/sys/imprime.php?lista=2391'
-          curl -sS -D "$RUNNER_TEMP/h.txt" -A 'Mozilla/5.0' -o "$RUNNER_TEMP/raw.html" "$u" || echo "curl falhou $?"
-          echo "=== cabeçalhos"; cat "$RUNNER_TEMP/h.txt"
-          echo "=== tamanho/tipo"; wc -c "$RUNNER_TEMP/raw.html"; file "$RUNNER_TEMP/raw.html"
           google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --blink-settings=imagesEnabled=false \
-            --virtual-time-budget=10000 --dump-dom "$u" > "$RUNNER_TEMP/dom.html" 2>/dev/null || echo "chrome falhou $?"
-          d="$RUNNER_TEMP/dom.html"
-          echo "=== dom: $(wc -c < "$d") bytes; tr=$(grep -o '<tr' "$d" | wc -l) td=$(grep -o '<td' "$d" | wc -l) img=$(grep -o '<img' "$d" | wc -l) a=$(grep -o '<a ' "$d" | wc -l)"
-          echo "=== ids de produto conhecidos presentes? 34328: $(grep -c 34328 "$d") 30576: $(grep -c 30576 "$d") 34331: $(grep -c 34331 "$d")"
-          echo "=== imgs (3)"; grep -o '<img[^>]*>' "$d" | head -3
-          echo "=== links (5)"; grep -o '<a [^>]*>' "$d" | head -5
-          echo "=== início do body (4000 chars)"; sed -n '/<body/,$p' "$d" | head -c 4000; echo
-          echo "=== trecho em volta de ROCHEDO (comprado)"; grep -n -i -m1 'ROCHEDO' "$d" | head -1
-          n=$(grep -n -i -m1 'ROCHEDO' "$d" | cut -d: -f1); [[ -n "$n" ]] && sed -n "$((n-15)),$((n+15))p" "$d" | head -c 3000
-          echo; echo "=== texto das linhas (python)"
-          python3 - "$d" <<'PY'
-          import re, sys, html
-          s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
-          rows = re.findall(r'<tr[^>]*>(.*?)</tr>', s, re.S | re.I)
-          print('linhas:', len(rows))
-          for r in rows[:8] + ['...'] + rows[-4:]:
-              if r == '...': print('...'); continue
-              cells = [html.unescape(re.sub(r'<[^>]+>', ' ', c)).split() for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S | re.I)]
-              print(' | '.join(' '.join(c) for c in cells))
+            --virtual-time-budget=10000 --dump-dom 'https://www.listapresentes.lojasafubra.com.br/sys/imprime.php?lista=2391' > "$RUNNER_TEMP/imprime.html" 2>/dev/null
+          node .github/scripts/atualizar-presentes.mjs --anterior gift-feed.json --saida "$RUNNER_TEMP/lista.json"
+          python3 - "$RUNNER_TEMP/imprime.html" "$RUNNER_TEMP/lista.json" <<'PY'
+          import re, sys, html, json, unicodedata
+          def chave(n):
+              n = re.sub(r'\*\S*$', '', n).replace('*', ' ')
+              n = re.sub(r'\s*-\s*\d+$', '', n)
+              n = re.sub(r'\s+,', ',', re.sub(r'\s+', ' ', n)).strip()
+              n = ''.join(c for c in unicodedata.normalize('NFD', n) if unicodedata.category(c) != 'Mn')
+              return n.upper()
+          s = open(sys.argv[1], encoding='utf-8').read()
+          imp = []
+          for r in re.findall(r'<tr[^>]*>(.*?)</tr>', s, re.S):
+              tds = re.findall(r'<td[^>]*>(.*?)</td>', r, re.S)
+              if len(tds) != 3: continue
+              nome = html.unescape(tds[0].split('<br>')[0]).strip()
+              preco = re.search(r'R\$\s*([\d.,]+)', tds[0]).group(1)
+              imp.append((nome, preco, int(tds[1]), int(tds[2])))
+          lista = json.load(open(sys.argv[2]))['items']
+          porchave = {chave(i['name']): i for i in lista}
+          print(f'impressão: {len(imp)} | lista: {len(lista)}')
+          print('comprados na impressão:', [(n, d, c) for n, p, d, c in imp if c > 0])
+          vistos = set()
+          for n, p, d, c in imp:
+              i = porchave.get(chave(n))
+              if not i:
+                  print(f'SÓ NA IMPRESSÃO: {n} | R$ {p} | desejada {d} | comprada {c}')
+                  continue
+              vistos.add(i['id'])
+              if (i['priceBRL'], i['requested'], i['purchased']) != (p, d, c):
+                  print(f'DIFERENTE: {n}: impressão R$ {p} {d}/{c} x lista R$ {i["priceBRL"]} {i["requested"]}/{i["purchased"]}')
+          for i in lista:
+              if i['id'] not in vistos: print(f'SÓ NA LISTA: {i["name"]} | {i["status"]}')
           PY
