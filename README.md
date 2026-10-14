@@ -19,7 +19,9 @@ Todo push na `main` dispara o workflow
    de presentes carrega.
 
 Em PRs para a `main` só a validação roda. Para republicar a `main` sem novo
-commit: Actions → Deploy no GitHub Pages → Run workflow.
+commit: Actions → Deploy no GitHub Pages → Run workflow. Um run de um commit
+que já não é o topo da `main` não publica nada, então re-executar um run
+antigo nunca põe uma versão velha no ar.
 
 Configuração necessária (uma vez): Settings → Pages → Build and deployment →
 Source: **GitHub Actions**.

@@ -55,9 +55,9 @@ echo "Referências conferidas: $referencias."
 
 if [[ ! -f "$saida/gift-feed.json" ]]; then
   falha "gift-feed.json ausente."
-elif ! jq -e '(.items | type == "array" and length > 0) and all(.items[]; .id and .name)' \
-  "$saida/gift-feed.json" >/dev/null; then
-  falha "gift-feed.json inválido: precisa ser JSON com uma lista .items não vazia, cada item com id e name."
+elif ! jq -e '(.items | type == "array" and length > 0) and all(.items[]; .id and .name)
+  and (.totals | type == "object")' "$saida/gift-feed.json" >/dev/null; then
+  falha "gift-feed.json inválido: precisa ser JSON com .totals e uma lista .items não vazia, cada item com id e name."
 fi
 
 if ((erros > 0)); then

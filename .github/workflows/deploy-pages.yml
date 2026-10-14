@@ -19,26 +19,35 @@ on:
 permissions:
   contents: read
 
-# Um deploy por vez, sem cancelar o que está em andamento: assim a
+# Na main, um deploy por vez e sem cancelar o que está em andamento: assim a
 # verificação de um push nunca cruza com o deploy do push seguinte.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('validar-{0}', github.ref) || 'github-pages' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.ref == 'refs/heads/main' && 'github-pages' || format('validar-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   validar:
     name: Validar o build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      artefato: ${{ steps.nome.outputs.artefato }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Montar e validar o site
         run: .github/scripts/montar-site.sh "$RUNNER_TEMP/site"
 
+      # Um nome por tentativa: num "Re-run all jobs" o deploy-pages acharia
+      # dois artefatos "github-pages" no mesmo run e recusaria publicar.
+      - name: Nomear o artefato desta tentativa
+        id: nome
+        run: echo "artefato=github-pages-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - name: Empacotar o site para o Pages
         uses: actions/upload-pages-artifact@v5
         with:
+          name: ${{ steps.nome.outputs.artefato }}
           path: ${{ runner.temp }}/site
           retention-days: 1
 
@@ -49,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -63,17 +73,36 @@ jobs:
         run: |
           fonte="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type)"
           if [[ "$fonte" != "workflow" ]]; then
-            echo "::error::O Pages ainda publica a partir de uma branch (build_type=$fonte). Em Settings → Pages → Build and deployment, troque Source para \"GitHub Actions\" e rode este workflow de novo."
+            echo "::error::O Pages ainda publica a partir de uma branch (build_type=$fonte). Em Settings → Pages → Build and deployment, troque Source para \"GitHub Actions\" e depois dispare Actions → Deploy no GitHub Pages → Run workflow (branch main)."
             exit 1
+          fi
+
+      # Re-executar um run antigo não pode trocar o site no ar por uma versão
+      # velha: só publica se este commit ainda for o topo da main.
+      - name: Conferir se o commit ainda é o topo da main
+        id: atual
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          topo="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$topo" == "$GITHUB_SHA" ]]; then
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Deploy pulado: este run é do commit ${GITHUB_SHA::7}, mas a main já está em ${topo::7}, que tem o próprio deploy."
+            echo "publicar=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publicar
         id: deploy
+        if: steps.atual.outputs.publicar == 'true'
         uses: actions/deploy-pages@v5
+        with:
+          artifact_name: ${{ needs.validar.outputs.artefato }}
 
   verificar:
     name: Verificar o site no ar
     needs: publicar
+    if: needs.publicar.outputs.page_url != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

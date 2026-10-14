@@ -81,8 +81,11 @@ conferir_navegador() {
     return
   fi
   dom="$tmp/dom.html"
+  # Sem imagens: as fotos da lista vêm do site da loja, e uma loja lenta não
+  # pode reprovar o nosso deploy.
   if ! timeout 90 "$navegador" --headless=new --no-sandbox --disable-gpu \
-    --disable-dev-shm-usage --no-first-run --virtual-time-budget=20000 \
+    --disable-dev-shm-usage --no-first-run --blink-settings=imagesEnabled=false \
+    --virtual-time-budget=20000 \
     --dump-dom "${url}?v=${versao}" >"$dom" 2>"$tmp/navegador.log"; then
     echo "o navegador falhou ao abrir a página: $(tail -n 3 "$tmp/navegador.log" | tr '\n' ' ')"
     return
