@@ -1,0 +1,41 @@
+name: Sondagem temporária da página de impressão da Afubra
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sondar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Baixar a página de impressão
+        run: |
+          u='https://www.listapresentes.lojasafubra.com.br/sys/imprime.php?lista=2391'
+          curl -sS -D "$RUNNER_TEMP/h.txt" -A 'Mozilla/5.0' -o "$RUNNER_TEMP/raw.html" "$u" || echo "curl falhou $?"
+          echo "=== cabeçalhos"; cat "$RUNNER_TEMP/h.txt"
+          echo "=== tamanho/tipo"; wc -c "$RUNNER_TEMP/raw.html"; file "$RUNNER_TEMP/raw.html"
+          google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --blink-settings=imagesEnabled=false \
+            --virtual-time-budget=10000 --dump-dom "$u" > "$RUNNER_TEMP/dom.html" 2>/dev/null || echo "chrome falhou $?"
+          d="$RUNNER_TEMP/dom.html"
+          echo "=== dom: $(wc -c < "$d") bytes; tr=$(grep -o '<tr' "$d" | wc -l) td=$(grep -o '<td' "$d" | wc -l) img=$(grep -o '<img' "$d" | wc -l) a=$(grep -o '<a ' "$d" | wc -l)"
+          echo "=== ids de produto conhecidos presentes? 34328: $(grep -c 34328 "$d") 30576: $(grep -c 30576 "$d") 34331: $(grep -c 34331 "$d")"
+          echo "=== imgs (3)"; grep -o '<img[^>]*>' "$d" | head -3
+          echo "=== links (5)"; grep -o '<a [^>]*>' "$d" | head -5
+          echo "=== início do body (4000 chars)"; sed -n '/<body/,$p' "$d" | head -c 4000; echo
+          echo "=== trecho em volta de ROCHEDO (comprado)"; grep -n -i -m1 'ROCHEDO' "$d" | head -1
+          n=$(grep -n -i -m1 'ROCHEDO' "$d" | cut -d: -f1); [[ -n "$n" ]] && sed -n "$((n-15)),$((n+15))p" "$d" | head -c 3000
+          echo; echo "=== texto das linhas (python)"
+          python3 - "$d" <<'PY'
+          import re, sys, html
+          s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+          rows = re.findall(r'<tr[^>]*>(.*?)</tr>', s, re.S | re.I)
+          print('linhas:', len(rows))
+          for r in rows[:8] + ['...'] + rows[-4:]:
+              if r == '...': print('...'); continue
+              cells = [html.unescape(re.sub(r'<[^>]+>', ' ', c)).split() for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S | re.I)]
+              print(' | '.join(' '.join(c) for c in cells))
+          PY
