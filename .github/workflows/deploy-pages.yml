@@ -5,10 +5,14 @@ name: Deploy no GitHub Pages
 #      (nada vai ao ar com referência quebrada ou lista ilegível);
 #   2. publica o site no Pages;
 #   3. confere o site no ar: arquivos idênticos ao publicado e guia renderizando.
-# A cada 15 minutos o workflow relê a lista da Afubra e republica o site só
-# se algum presente mudou (comprado, incluído, removido, preço).
+# De 12 em 12 horas, até 27/10, o workflow relê a lista da Afubra e
+# republica o site só se algum presente mudou (comprado, incluído, removido,
+# preço). Depois de 27/10 a lista não é mais lida: fica a que estiver no ar.
+# Presente ganho ou incluído na lista vira uma issue mencionando o dono do
+# repositório, e o GitHub manda o aviso por e-mail.
 # Em PRs para a main roda só a validação. Também dá para disparar à mão
-# (Actions → Deploy no GitHub Pages → Run workflow) para republicar a main.
+# (Actions → Deploy no GitHub Pages → Run workflow) para republicar a main
+# ou, marcando "testar_aviso", para receber um e-mail de teste.
 #
 # Requer Settings → Pages → Build and deployment → Source: "GitHub Actions".
 
@@ -18,14 +22,22 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      testar_aviso:
+        description: Enviar também um aviso de teste por e-mail
+        type: boolean
+        default: false
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    # 08:17 e 20:17 em Brasília (11:17 e 23:17 UTC), de 1º a 27 de outubro.
+    - cron: '17 11,23 1-27 10 *'
 
 permissions:
   contents: read
 
 env:
   URL_DO_SITE: https://luis-b-o.github.io/irati-wedding-guide/
+  # Último dia em que a lista é lida da Afubra (horário de Brasília).
+  FIM_DA_ATUALIZACAO: '2026-10-27'
 
 # Na main, um deploy por vez e sem cancelar o que está em andamento: assim a
 # verificação de um push nunca cruza com o deploy do push seguinte.
@@ -41,6 +53,7 @@ jobs:
     outputs:
       artefato: ${{ steps.nome.outputs.artefato }}
       publicar: ${{ steps.presentes.outputs.publicar }}
+      novidades: ${{ steps.presentes.outputs.novidades }}
     steps:
       - uses: actions/checkout@v5
 
@@ -52,12 +65,14 @@ jobs:
         run: node --test .github/scripts/atualizar-presentes.test.mjs
 
       # O feed no ar serve para reconhecer presentes já comprados (a loja tira
-      # o link deles) e, nas execuções agendadas, para saber se algo mudou.
-      # Se a Afubra não responder num push, o deploy segue com a lista que já
-      # está no ar (nunca com a do repositório, que é antiga); em PRs e
-      # execuções agendadas, a falha fica visível.
+      # o link deles), para saber se algo mudou e para listar as novidades do
+      # aviso por e-mail. Se a Afubra não responder num push, o deploy segue
+      # com a lista que já está no ar (nunca com a do repositório, que é
+      # antiga); em PRs e execuções agendadas, a falha fica visível.
       - name: Buscar a lista de presentes na Afubra
         id: presentes
+        env:
+          TESTAR_AVISO: ${{ inputs.testar_aviso }}
         run: |
           no_ar="$RUNNER_TEMP/feed-no-ar.json"
           tem_feed_no_ar=true
@@ -66,7 +81,21 @@ jobs:
             cp gift-feed.json "$no_ar"
             tem_feed_no_ar=false
           fi
-          if ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json; then
+          if [[ "$(TZ=America/Sao_Paulo date +%F)" > "$FIM_DA_ATUALIZACAO" ]]; then
+            # Atualização encerrada: o agendado não faz nada e um push publica
+            # a lista que já está no ar.
+            if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+              echo "A lista não é mais lida da Afubra depois de $FIM_DA_ATUALIZACAO; nada a fazer."
+              echo "publicar=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$tem_feed_no_ar" != true ]]; then
+              echo "::error::O gift-feed.json publicado não respondeu; nada foi publicado para não voltar a uma lista antiga."
+              exit 1
+            fi
+            echo "A lista não é mais lida da Afubra depois de $FIM_DA_ATUALIZACAO; segue a que está no ar."
+            cp "$no_ar" gift-feed.json
+          elif ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json; then
             if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
               exit 1
             fi
@@ -89,6 +118,27 @@ jobs:
           else
             echo "publicar=true" >> "$GITHUB_OUTPUT"
           fi
+          # Novidades para o aviso por e-mail: presente ganho desde o último
+          # deploy e presente que entrou na lista. Só contra o feed no ar: o
+          # do repositório é antigo e repetiria avisos já dados.
+          novidades=""
+          if [[ "$tem_feed_no_ar" == true ]]; then
+            novidades="$(jq -r --slurpfile antes "$no_ar" '
+              ($antes[0].items | map({key: .id, value: .}) | from_entries) as $a
+              | .items[] | $a[.id] as $p
+              | if $p == null then "- Entrou na lista: \(.name) (R$ \(.priceBRL))"
+                elif .purchased > $p.purchased then "- Ganhamos: \(.name) (\(.purchased) de \(.requested))"
+                else empty end' gift-feed.json)"
+          fi
+          if [[ "$TESTAR_AVISO" == true ]]; then
+            novidades+="${novidades:+$'\n'}- Teste: este é um aviso de teste, nenhum presente mudou."
+          fi
+          {
+            echo "novidades<<FIM_DAS_NOVIDADES"
+            if [[ -n "$novidades" ]]; then echo "$novidades"; fi
+            echo "FIM_DAS_NOVIDADES"
+          } >> "$GITHUB_OUTPUT"
+          if [[ -n "$novidades" ]]; then echo "$novidades" | tee -a "$GITHUB_STEP_SUMMARY"; fi
           jq -r '[.items[] | select(.status == "fully-purchased") | .name] as $ganhos
             | "Lista de presentes: \(.itemCount) presentes, \($ganhos | length) já ganho(s) — lida em \(.scrapedAt).",
               ($ganhos[] | "- Já ganhamos: \(.)")' gift-feed.json | tee -a "$GITHUB_STEP_SUMMARY"
@@ -185,3 +235,26 @@ jobs:
         env:
           URL_PUBLICADA: ${{ needs.publicar.outputs.page_url }}
         run: .github/scripts/verificar-deploy.sh "$URL_PUBLICADA" "$RUNNER_TEMP/site"
+
+  # O GitHub manda por e-mail as menções em issues: o aviso é uma issue que
+  # menciona o dono do repositório. Só depois do deploy, para que a próxima
+  # execução já compare com a lista nova e não repita o aviso.
+  avisar:
+    name: Avisar por e-mail
+    needs: [validar, publicar]
+    if: needs.publicar.outputs.page_url != '' && needs.validar.outputs.novidades != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Abrir a issue do aviso
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOVIDADES: ${{ needs.validar.outputs.novidades }}
+          DONO: ${{ github.repository_owner }}
+        run: |
+          quando="$(TZ=America/Sao_Paulo date '+%d/%m às %H:%M')"
+          corpo="$(printf '@%s, a lista de presentes na Lojas Afubra mudou:\n\n%s\n\nO guia já foi atualizado: %s\n\nExecução: %s/%s/actions/runs/%s' \
+            "$DONO" "$NOVIDADES" "$URL_DO_SITE" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "🎁 Lista de presentes: novidades em $quando" --body "$corpo"
