@@ -54,25 +54,37 @@ jobs:
       # O feed no ar serve para reconhecer presentes já comprados (a loja tira
       # o link deles) e, nas execuções agendadas, para saber se algo mudou.
       # Se a Afubra não responder num push, o deploy segue com a lista que já
-      # está no ar; em PRs e execuções agendadas, a falha fica visível.
+      # está no ar (nunca com a do repositório, que é antiga); em PRs e
+      # execuções agendadas, a falha fica visível.
       - name: Buscar a lista de presentes na Afubra
         id: presentes
         run: |
           no_ar="$RUNNER_TEMP/feed-no-ar.json"
+          tem_feed_no_ar=true
           if ! curl -fsS --retry 2 --max-time 30 -o "$no_ar" "${URL_DO_SITE}gift-feed.json?v=$GITHUB_RUN_ID"; then
             echo "::warning::Não deu para baixar o gift-feed.json publicado; a referência é o do repositório."
             cp gift-feed.json "$no_ar"
+            tem_feed_no_ar=false
           fi
           if ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json; then
             if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
               exit 1
             fi
+            if [[ "$tem_feed_no_ar" != true ]]; then
+              echo "::error::Nem a Afubra nem o gift-feed.json publicado responderam; nada foi publicado para não voltar a uma lista antiga."
+              exit 1
+            fi
             echo "::warning::A lista da Afubra não pôde ser lida; o deploy segue com a lista que já está no ar."
             cp "$no_ar" gift-feed.json
           fi
+          # Agendado: só republica se a lista mudou ou se o site no ar não é
+          # deste commit (um push que esperava na fila pode ter sido substituído
+          # por esta execução). O index.html cita os bundles pelo hash, então
+          # muda sempre que o build muda.
           if [[ "$GITHUB_EVENT_NAME" == schedule ]] &&
-            cmp -s <(jq -S 'del(.scrapedAt)' "$no_ar") <(jq -S 'del(.scrapedAt)' gift-feed.json); then
-            echo "Nenhum presente mudou desde o último deploy; nada a publicar."
+            cmp -s <(jq -S 'del(.scrapedAt)' "$no_ar") <(jq -S 'del(.scrapedAt)' gift-feed.json) &&
+            curl -fsS --retry 2 --max-time 30 "${URL_DO_SITE}?v=$GITHUB_RUN_ID" | cmp -s - index.html; then
+            echo "Nenhum presente mudou e o site no ar já é deste commit; nada a publicar."
             echo "publicar=false" >> "$GITHUB_OUTPUT"
           else
             echo "publicar=true" >> "$GITHUB_OUTPUT"
