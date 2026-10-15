@@ -29,14 +29,26 @@ antigo nunca põe uma versão velha no ar.
 
 A lista vem da [página da Lojas Afubra](https://www.listapresentes.lojasafubra.com.br/lista-presente/0,0,2391,0-0,96,1/copos-e-tacas.html),
 lida por `.github/scripts/atualizar-presentes.mjs` num Chrome headless: a cada
-deploy e, de 15 em 15 minutos, por uma execução agendada que só republica o
-site se algum presente mudou. O que a loja mostra como comprado aparece no guia
+deploy e, de 12 em 12 horas (08:17 e 20:17 em Brasília) até 27/10, por uma
+execução agendada que só republica o site se algum presente mudou. Depois de
+27/10 a lista não é mais lida: fica a que estiver no ar (`FIM_DA_ATUALIZACAO`
+no workflow). O que a loja mostra como comprado aparece no guia
 como "Já ganhamos"; o que ela deixa indisponível sem estar comprado sai da
 lista. O `gift-feed.json` do repositório é só a referência inicial: o publicado
 é sempre o lido da loja. Se a loja não responder num push, o deploy segue com a
 lista que já está no ar.
 
-Configuração necessária (uma vez): Settings → Pages → Build and deployment →
+### Aviso por e-mail
+
+Quando um presente é ganho ou entra na lista, o workflow abre uma issue
+"🎁 Lista de presentes: novidades em …" mencionando o dono do repositório, e o
+GitHub manda o aviso para o e-mail da conta. Para testar: Actions → Deploy no
+GitHub Pages → Run workflow, marcando "Enviar também um aviso de teste por
+e-mail".
+
+## Configuração
+
+Necessária uma vez: Settings → Pages → Build and deployment →
 Source: **GitHub Actions**.
 
 A pasta `.github/` é mantida aqui, e não no monorepo: o `deploy-guide.sh`
