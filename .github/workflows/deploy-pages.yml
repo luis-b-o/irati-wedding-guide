@@ -1,9 +1,12 @@
 name: Deploy no GitHub Pages
 
 # Todo push na main publica o guia no GitHub Pages, em três etapas:
-#   1. valida o build (nada vai ao ar com referência quebrada);
-#   2. publica a versão do commit no Pages;
-#   3. confere o site no ar: arquivos idênticos ao commit e guia renderizando.
+#   1. valida o build e busca a lista de presentes na página da Afubra
+#      (nada vai ao ar com referência quebrada ou lista ilegível);
+#   2. publica o site no Pages;
+#   3. confere o site no ar: arquivos idênticos ao publicado e guia renderizando.
+# A cada 15 minutos o workflow relê a lista da Afubra e republica o site só
+# se algum presente mudou (comprado, incluído, removido, preço).
 # Em PRs para a main roda só a validação. Também dá para disparar à mão
 # (Actions → Deploy no GitHub Pages → Run workflow) para republicar a main.
 #
@@ -15,9 +18,14 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
 
 permissions:
   contents: read
+
+env:
+  URL_DO_SITE: https://luis-b-o.github.io/irati-wedding-guide/
 
 # Na main, um deploy por vez e sem cancelar o que está em andamento: assim a
 # verificação de um push nunca cruza com o deploy do push seguinte.
@@ -32,8 +40,58 @@ jobs:
     timeout-minutes: 10
     outputs:
       artefato: ${{ steps.nome.outputs.artefato }}
+      publicar: ${{ steps.presentes.outputs.publicar }}
     steps:
       - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Testar o leitor da lista de presentes
+        run: node --test .github/scripts/atualizar-presentes.test.mjs
+
+      # O feed no ar serve para reconhecer presentes já comprados (a loja tira
+      # o link deles) e, nas execuções agendadas, para saber se algo mudou.
+      # Se a Afubra não responder num push, o deploy segue com a lista que já
+      # está no ar (nunca com a do repositório, que é antiga); em PRs e
+      # execuções agendadas, a falha fica visível.
+      - name: Buscar a lista de presentes na Afubra
+        id: presentes
+        run: |
+          no_ar="$RUNNER_TEMP/feed-no-ar.json"
+          tem_feed_no_ar=true
+          if ! curl -fsS --retry 2 --max-time 30 -o "$no_ar" "${URL_DO_SITE}gift-feed.json?v=$GITHUB_RUN_ID"; then
+            echo "::warning::Não deu para baixar o gift-feed.json publicado; a referência é o do repositório."
+            cp gift-feed.json "$no_ar"
+            tem_feed_no_ar=false
+          fi
+          if ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json; then
+            if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+              exit 1
+            fi
+            if [[ "$tem_feed_no_ar" != true ]]; then
+              echo "::error::Nem a Afubra nem o gift-feed.json publicado responderam; nada foi publicado para não voltar a uma lista antiga."
+              exit 1
+            fi
+            echo "::warning::A lista da Afubra não pôde ser lida; o deploy segue com a lista que já está no ar."
+            cp "$no_ar" gift-feed.json
+          fi
+          # Agendado: só republica se a lista mudou ou se o site no ar não é
+          # deste commit (um push que esperava na fila pode ter sido substituído
+          # por esta execução). O index.html cita os bundles pelo hash, então
+          # muda sempre que o build muda.
+          if [[ "$GITHUB_EVENT_NAME" == schedule ]] &&
+            cmp -s <(jq -S 'del(.scrapedAt)' "$no_ar") <(jq -S 'del(.scrapedAt)' gift-feed.json) &&
+            curl -fsS --retry 2 --max-time 30 "${URL_DO_SITE}?v=$GITHUB_RUN_ID" | cmp -s - index.html; then
+            echo "Nenhum presente mudou e o site no ar já é deste commit; nada a publicar."
+            echo "publicar=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          fi
+          jq -r '[.items[] | select(.status == "fully-purchased") | .name] as $ganhos
+            | "Lista de presentes: \(.itemCount) presentes, \($ganhos | length) já ganho(s) — lida em \(.scrapedAt).",
+              ($ganhos[] | "- Já ganhamos: \(.)")' gift-feed.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Montar e validar o site
         run: .github/scripts/montar-site.sh "$RUNNER_TEMP/site"
@@ -42,9 +100,11 @@ jobs:
       # dois artefatos "github-pages" no mesmo run e recusaria publicar.
       - name: Nomear o artefato desta tentativa
         id: nome
+        if: steps.presentes.outputs.publicar == 'true'
         run: echo "artefato=github-pages-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Empacotar o site para o Pages
+        if: steps.presentes.outputs.publicar == 'true'
         uses: actions/upload-pages-artifact@v5
         with:
           name: ${{ steps.nome.outputs.artefato }}
@@ -54,7 +114,7 @@ jobs:
   publicar:
     name: Publicar no GitHub Pages
     needs: validar
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.validar.outputs.publicar == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -101,17 +161,27 @@ jobs:
 
   verificar:
     name: Verificar o site no ar
-    needs: publicar
+    needs: [validar, publicar]
     if: needs.publicar.outputs.page_url != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
-      - name: Montar o site de referência
-        run: .github/scripts/montar-site.sh "$RUNNER_TEMP/site"
+      # A referência é o pacote que foi ao ar (com a lista lida da Afubra),
+      # não o repositório.
+      - name: Baixar o pacote publicado
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.validar.outputs.artefato }}
+          path: ${{ runner.temp }}/pacote
+
+      - name: Extrair o site publicado
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          tar -xf "$RUNNER_TEMP/pacote/artifact.tar" -C "$RUNNER_TEMP/site"
 
       - name: Conferir arquivos e renderização
         env:
-          URL_DO_SITE: ${{ needs.publicar.outputs.page_url }}
-        run: .github/scripts/verificar-deploy.sh "$URL_DO_SITE" "$RUNNER_TEMP/site"
+          URL_PUBLICADA: ${{ needs.publicar.outputs.page_url }}
+        run: .github/scripts/verificar-deploy.sh "$URL_PUBLICADA" "$RUNNER_TEMP/site"

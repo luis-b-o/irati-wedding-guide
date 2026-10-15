@@ -2,10 +2,10 @@
 # Confere o site no ar depois do deploy, em duas etapas:
 #
 #   1. Arquivos: cada arquivo do site montado precisa responder 200 na URL
-#      publicada, com exatamente o mesmo conteúdo (sha256) deste commit, e
+#      publicada, com exatamente o mesmo conteúdo do pacote publicado, e
 #      HTML/JS/CSS/JSON com o Content-Type certo.
 #   2. Navegador: um Chrome headless abre a página e confere que o React
-#      renderizou o guia e que a lista de presentes carregou do gift-feed.json.
+#      renderizou o guia e que a lista mostra um card por presente do feed.
 #
 # A CDN do GitHub Pages pode levar alguns instantes para trocar de versão,
 # então cada etapa é repetida até passar ou até esgotar as tentativas.
@@ -75,7 +75,7 @@ encontrar_navegador() {
 
 # Etapa 2. Imprime um problema por linha; sem saída = tudo certo.
 conferir_navegador() {
-  local navegador dom primeiro_presente texto
+  local navegador dom texto esperados cards
   if ! navegador="$(encontrar_navegador)"; then
     echo "nenhum Chrome/Chromium encontrado (defina NAVEGADOR)"
     return
@@ -97,9 +97,12 @@ conferir_navegador() {
   if grep -qF "A lista tirou uma soneca" "$dom"; then
     echo "a lista de presentes mostrou o erro de carregamento"
   fi
-  primeiro_presente="$(jq -r '.items[0].name' "$site/gift-feed.json")"
-  grep -qF "$primeiro_presente" "$dom" ||
-    echo "a lista de presentes não mostra \"$primeiro_presente\" (gift-feed.json não carregou)"
+  # Um card (<li class="agl:h-full">) por presente do gift-feed.json publicado.
+  esperados="$(jq '.items | length' "$site/gift-feed.json")"
+  cards="$(grep -o '<li class="agl:h-full"' "$dom" | wc -l)"
+  if [[ "$cards" != "$esperados" ]]; then
+    echo "a lista de presentes mostra $cards cards, mas o gift-feed.json tem $esperados presentes"
+  fi
 }
 
 # Repete a etapa até passar; na última tentativa, reprova com os problemas.
