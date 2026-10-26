@@ -17,9 +17,10 @@
 //
 // Uso:
 //   node .github/scripts/atualizar-presentes.mjs --saida gift-feed.json \
-//     [--anterior feed-no-ar.json] [--html pagina.html]
+//     [--anterior feed-no-ar.json] [--html pagina.html] [--diagnostico pagina.html]
 //
-// --html lê um HTML salvo em vez de abrir a loja (testes). Variável
+// --html lê um HTML salvo em vez de abrir a loja (testes). --diagnostico
+// guarda a página que a loja devolveu quando ela não é a lista. Variável
 // opcional NAVEGADOR: caminho do Chrome/Chromium.
 
 import { execFile } from 'node:child_process';
@@ -76,6 +77,20 @@ export function tituloDaLista(html) {
 export function tituloDaPagina(html) {
   const m = html.match(/<title[^>]*>([^<]*)<\/title>/i);
   return m ? limparTexto(m[1]) || null : null;
+}
+
+// Título e começo do texto visível de uma página que não é a lista: o
+// suficiente para o log dizer o que a loja devolveu (erro, aviso, bloqueio).
+export function descreverPagina(html, limite = 400) {
+  const corpo = html.match(/<body[^>]*>([\s\S]*)/i)?.[1] ?? html;
+  const texto = limparTexto(
+    corpo
+      .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  );
+  const trecho = texto.length > limite ? `${texto.slice(0, limite)}…` : texto;
+  return `título "${tituloDaPagina(html) ?? ''}", texto "${trecho}"`;
 }
 
 // Nome da loja ("CAÇAROLA STONEFLON GRANITO NÚMERO 28 MTA*8433") no formato
@@ -250,7 +265,8 @@ async function encontrarNavegador() {
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function abrirPagina(navegador, url, log) {
+// diagnostico: arquivo onde guardar a página quando ela não é a lista.
+async function abrirPagina(navegador, url, log, diagnostico) {
   for (let tentativa = 1; ; tentativa++) {
     try {
       const { stdout } = await executar(
@@ -263,7 +279,10 @@ async function abrirPagina(navegador, url, log) {
         { timeout: 90_000, maxBuffer: 32 * 1024 * 1024 },
       );
       if (contarProdutos(stdout) === null) {
-        throw new Error(`a página não mostra "Produtos encontrados" (${stdout.length} bytes)`);
+        if (diagnostico) await writeFile(diagnostico, stdout);
+        throw new Error(
+          `a página não mostra "Produtos encontrados" (${stdout.length} bytes; ${descreverPagina(stdout)})`,
+        );
       }
       return stdout;
     } catch (erro) {
@@ -275,11 +294,11 @@ async function abrirPagina(navegador, url, log) {
 }
 
 // Aumenta o tamanho da página até ver todos os "Produtos encontrados".
-async function lerListaCompleta({ navegador, html, conhecidos, log }) {
+async function lerListaCompleta({ navegador, html, conhecidos, log, diagnostico }) {
   for (let tamanho = 96; ; tamanho *= 2) {
     const url = urlDaLista(tamanho);
     log(`Lendo ${url}`);
-    const pagina = html ?? (await abrirPagina(navegador, url, log));
+    const pagina = html ?? (await abrirPagina(navegador, url, log, diagnostico));
     const total = contarProdutos(pagina);
     if (total === null) throw new Error(`"Produtos encontrados" não aparece em ${url}: o layout da loja mudou?`);
     const lidos = lerItens(pagina, url, conhecidos);
@@ -299,10 +318,13 @@ async function principal() {
       saida: { type: 'string' },
       anterior: { type: 'string' },
       html: { type: 'string' },
+      diagnostico: { type: 'string' },
     },
   });
   if (!values.saida) {
-    console.error('Uso: atualizar-presentes.mjs --saida <arquivo> [--anterior <feed.json>] [--html <pagina.html>]');
+    console.error(
+      'Uso: atualizar-presentes.mjs --saida <arquivo> [--anterior <feed.json>] [--html <pagina.html>] [--diagnostico <pagina.html>]',
+    );
     process.exit(2);
   }
   const log = (m) => console.log(m);
@@ -318,7 +340,7 @@ async function principal() {
   const html = values.html ? await readFile(values.html, 'utf8') : undefined;
   const navegador = html === undefined ? await encontrarNavegador() : undefined;
 
-  const lista = await lerListaCompleta({ navegador, html, conhecidos, log });
+  const lista = await lerListaCompleta({ navegador, html, conhecidos, log, diagnostico: values.diagnostico });
   const feed = montarFeed({
     itens: lista.itens,
     fonte: lista.url,

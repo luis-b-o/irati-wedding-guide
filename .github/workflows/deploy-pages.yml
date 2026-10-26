@@ -76,6 +76,7 @@ jobs:
         run: |
           no_ar="$RUNNER_TEMP/feed-no-ar.json"
           tem_feed_no_ar=true
+          mkdir -p "$RUNNER_TEMP/diagnostico"
           if ! curl -fsS --retry 2 --max-time 30 -o "$no_ar" "${URL_DO_SITE}gift-feed.json?v=$GITHUB_RUN_ID"; then
             echo "::warning::Não deu para baixar o gift-feed.json publicado; a referência é o do repositório."
             cp gift-feed.json "$no_ar"
@@ -95,7 +96,8 @@ jobs:
             fi
             echo "A lista não é mais lida da Afubra depois de $FIM_DA_ATUALIZACAO; segue a que está no ar."
             cp "$no_ar" gift-feed.json
-          elif ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json; then
+          elif ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json \
+            --diagnostico "$RUNNER_TEMP/diagnostico/pagina-da-afubra.html"; then
             if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
               exit 1
             fi
@@ -142,6 +144,17 @@ jobs:
           jq -r '[.items[] | select(.status == "fully-purchased") | .name] as $ganhos
             | "Lista de presentes: \(.itemCount) presentes, \($ganhos | length) já ganho(s) — lida em \(.scrapedAt).",
               ($ganhos[] | "- Já ganhamos: \(.)")' gift-feed.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Quando a Afubra devolve outra coisa no lugar da lista, a página fica
+      # guardada para ver o que a loja mostrou.
+      - name: Guardar a página da Afubra que não pôde ser lida
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pagina-da-afubra-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/diagnostico/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Montar e validar o site
         run: .github/scripts/montar-site.sh "$RUNNER_TEMP/site"

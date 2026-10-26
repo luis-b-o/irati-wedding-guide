@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import {
   chaveDoNome,
   contarProdutos,
+  descreverPagina,
   embelezarNome,
   lerItens,
   montarFeed,
@@ -102,6 +103,17 @@ test('nomes no formato que o guia sempre mostrou', () => {
     chaveDoNome('CAÇAROLA STONEFLON GRANITO NÚMERO 28 MTA*8433'),
     chaveDoNome('Caçarola Stoneflon Granito Número 28 Mta'),
   );
+});
+
+test('página que não é a lista é descrita pelo título e pelo texto visível', () => {
+  const pagina = `<html><head><title>Lojas Afubra - Lista de presente</title>
+    <style>.x{color:red}</style></head><body><script>var a = 1;</script>
+    <h2>Lista&nbsp;não encontrada</h2>  <p>Procure   outra lista.</p><!-- fim --></body></html>`;
+  assert.equal(
+    descreverPagina(pagina),
+    'título "Lojas Afubra - Lista de presente", texto "Lista não encontrada Procure outra lista."',
+  );
+  assert.match(descreverPagina(`<body>${'a'.repeat(500)}</body>`, 10), /texto "a{10}…"$/);
 });
 
 test('validação barra lista vazia e preço fora do formato', () => {
