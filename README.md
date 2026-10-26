@@ -29,14 +29,28 @@ antigo nunca põe uma versão velha no ar.
 
 A lista vem da [página da Lojas Afubra](https://www.listapresentes.lojasafubra.com.br/lista-presente/0,0,2391,0-0,96,1/copos-e-tacas.html),
 lida por `.github/scripts/atualizar-presentes.mjs` num Chrome headless: a cada
-deploy e, de 12 em 12 horas (08:17 e 20:17 em Brasília) até 27/10, por uma
+deploy e, de 12 em 12 horas (08:17 e 20:17 em Brasília) até 30/11, por uma
 execução agendada que só republica o site se algum presente mudou. Depois de
-27/10 a lista não é mais lida: fica a que estiver no ar (`FIM_DA_ATUALIZACAO`
-no workflow). O que a loja mostra como comprado aparece no guia
+30/11 a lista não é mais lida: fica a que estiver no ar (`FIM_DA_ATUALIZACAO`
+no workflow; para ir além de novembro, mude também os meses do `cron`). O que a
+loja mostra como comprado aparece no guia
 como "Já ganhamos"; o que ela deixa indisponível sem estar comprado sai da
 lista. O `gift-feed.json` do repositório é só a referência inicial: o publicado
 é sempre o lido da loja. Se a loja não responder num push, o deploy segue com a
 lista que já está no ar.
+
+### Lista encerrada pela loja
+
+Desde 25/10, o dia seguinte ao casamento, a Afubra responde "Evento não
+encontrado" no lugar da lista. O leitor reconhece essa página (sai com código
+3) e o workflow segue com a última lista lida, em qualquer evento: o run fica
+verde, com um aviso na página do run, e nada é republicado. Se a loja reabrir a
+lista até `FIM_DA_ATUALIZACAO`, a próxima execução agendada volta a lê-la
+sozinha.
+
+Quando a loja devolve outra página no lugar da lista, o log diz o título e o
+começo do texto dela, e a página fica no artefato `pagina-da-afubra-N` do run
+por 7 dias.
 
 ### Aviso por e-mail
 

@@ -5,11 +5,14 @@ name: Deploy no GitHub Pages
 #      (nada vai ao ar com referência quebrada ou lista ilegível);
 #   2. publica o site no Pages;
 #   3. confere o site no ar: arquivos idênticos ao publicado e guia renderizando.
-# De 12 em 12 horas, até 27/10, o workflow relê a lista da Afubra e
+# De 12 em 12 horas, até 30/11, o workflow relê a lista da Afubra e
 # republica o site só se algum presente mudou (comprado, incluído, removido,
-# preço). Depois de 27/10 a lista não é mais lida: fica a que estiver no ar.
+# preço). Depois de 30/11 a lista não é mais lida: fica a que estiver no ar.
 # Presente ganho ou incluído na lista vira uma issue mencionando o dono do
 # repositório, e o GitHub manda o aviso por e-mail.
+# Se a loja encerrar a lista ("Evento não encontrado", como desde 25/10), o
+# guia segue com a última lista lida e o run não falha; a leitura volta
+# sozinha se a loja reabrir a lista até 30/11.
 # Em PRs para a main roda só a validação. Também dá para disparar à mão
 # (Actions → Deploy no GitHub Pages → Run workflow) para republicar a main
 # ou, marcando "testar_aviso", para receber um e-mail de teste.
@@ -28,16 +31,18 @@ on:
         type: boolean
         default: false
   schedule:
-    # 08:17 e 20:17 em Brasília (11:17 e 23:17 UTC), de 1º a 27 de outubro.
-    - cron: '17 11,23 1-27 10 *'
+    # 08:17 e 20:17 em Brasília (11:17 e 23:17 UTC), em outubro e novembro;
+    # o fim de fato é FIM_DA_ATUALIZACAO.
+    - cron: '17 11,23 * 10,11 *'
 
 permissions:
   contents: read
 
 env:
   URL_DO_SITE: https://luis-b-o.github.io/irati-wedding-guide/
-  # Último dia em que a lista é lida da Afubra (horário de Brasília).
-  FIM_DA_ATUALIZACAO: '2026-10-27'
+  # Último dia em que a lista é lida da Afubra (horário de Brasília). Para
+  # estender além de novembro, mude também os meses do cron.
+  FIM_DA_ATUALIZACAO: '2026-11-30'
 
 # Na main, um deploy por vez e sem cancelar o que está em andamento: assim a
 # verificação de um push nunca cruza com o deploy do push seguinte.
@@ -68,7 +73,9 @@ jobs:
       # o link deles), para saber se algo mudou e para listar as novidades do
       # aviso por e-mail. Se a Afubra não responder num push, o deploy segue
       # com a lista que já está no ar (nunca com a do repositório, que é
-      # antiga); em PRs e execuções agendadas, a falha fica visível.
+      # antiga); em PRs e execuções agendadas, a falha fica visível. Lista
+      # encerrada pela loja (código 3 do leitor) não é falha: em qualquer
+      # evento, segue a lista que já está no ar.
       - name: Buscar a lista de presentes na Afubra
         id: presentes
         env:
@@ -96,17 +103,30 @@ jobs:
             fi
             echo "A lista não é mais lida da Afubra depois de $FIM_DA_ATUALIZACAO; segue a que está no ar."
             cp "$no_ar" gift-feed.json
-          elif ! node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json \
-            --diagnostico "$RUNNER_TEMP/diagnostico/pagina-da-afubra.html"; then
-            if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
-              exit 1
+          else
+            leitura=0
+            node .github/scripts/atualizar-presentes.mjs --anterior "$no_ar" --saida gift-feed.json \
+              --diagnostico "$RUNNER_TEMP/diagnostico/pagina-da-afubra.html" || leitura=$?
+            if ((leitura == 3)); then
+              if [[ "$tem_feed_no_ar" != true ]]; then
+                echo "::error::A Afubra encerrou a lista e o gift-feed.json publicado não respondeu; nada foi publicado para não voltar a uma lista antiga."
+                exit 1
+              fi
+              aviso="A Afubra encerrou a lista (\"Evento não encontrado\"): o guia segue com a lista lida em $(jq -r .scrapedAt "$no_ar"). A leitura volta sozinha se a loja reabrir a lista até $FIM_DA_ATUALIZACAO."
+              echo "::warning::$aviso"
+              echo "$aviso" >> "$GITHUB_STEP_SUMMARY"
+              cp "$no_ar" gift-feed.json
+            elif ((leitura != 0)); then
+              if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+                exit 1
+              fi
+              if [[ "$tem_feed_no_ar" != true ]]; then
+                echo "::error::Nem a Afubra nem o gift-feed.json publicado responderam; nada foi publicado para não voltar a uma lista antiga."
+                exit 1
+              fi
+              echo "::warning::A lista da Afubra não pôde ser lida; o deploy segue com a lista que já está no ar."
+              cp "$no_ar" gift-feed.json
             fi
-            if [[ "$tem_feed_no_ar" != true ]]; then
-              echo "::error::Nem a Afubra nem o gift-feed.json publicado responderam; nada foi publicado para não voltar a uma lista antiga."
-              exit 1
-            fi
-            echo "::warning::A lista da Afubra não pôde ser lida; o deploy segue com a lista que já está no ar."
-            cp "$no_ar" gift-feed.json
           fi
           # Agendado: só republica se a lista mudou ou se o site no ar não é
           # deste commit (um push que esperava na fila pode ter sido substituído

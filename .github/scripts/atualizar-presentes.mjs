@@ -14,6 +14,9 @@
 //   img-<foto> e o link da lista.
 // - A loja ignora o número da página na URL; para ver tudo, aumenta-se o
 //   tamanho da página até bater com "Produtos encontrados: N".
+// - Depois do casamento a loja pode tirar a lista do ar: no lugar dela, a
+//   página mostra "Evento não encontrado". O script sai então com código 3
+//   (e não 1), para o workflow seguir com a lista que já está no ar.
 //
 // Uso:
 //   node .github/scripts/atualizar-presentes.mjs --saida gift-feed.json \
@@ -79,18 +82,36 @@ export function tituloDaPagina(html) {
   return m ? limparTexto(m[1]) || null : null;
 }
 
-// Título e começo do texto visível de uma página que não é a lista: o
-// suficiente para o log dizer o que a loja devolveu (erro, aviso, bloqueio).
-export function descreverPagina(html, limite = 400) {
+function textoVisivel(html) {
   const corpo = html.match(/<body[^>]*>([\s\S]*)/i)?.[1] ?? html;
-  const texto = limparTexto(
+  return limparTexto(
     corpo
       .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1>/gi, ' ')
       .replace(/<!--[\s\S]*?-->/g, ' ')
       .replace(/<[^>]+>/g, ' '),
   );
+}
+
+// Título e começo do texto visível de uma página que não é a lista: o
+// suficiente para o log dizer o que a loja devolveu (erro, aviso, bloqueio).
+export function descreverPagina(html, limite = 400) {
+  const texto = textoVisivel(html);
   const trecho = texto.length > limite ? `${texto.slice(0, limite)}…` : texto;
   return `título "${tituloDaPagina(html) ?? ''}", texto "${trecho}"`;
+}
+
+// A loja tirou a lista do ar (desde 25/10/2026, dia seguinte ao casamento):
+// a página vem com o cabeçalho do site e só "Evento não encontrado.
+// Retorne e tente novamente." no lugar dos presentes.
+export function listaEncerrada(html) {
+  return contarProdutos(html) === null && /\bEvento não encontrado\b/i.test(textoVisivel(html));
+}
+
+export class ListaEncerrada extends Error {
+  constructor(url) {
+    super(`A Afubra não encontra mais a lista ${ID_DA_LISTA} ("Evento não encontrado" em ${url}): a loja encerrou a lista.`);
+    this.name = 'ListaEncerrada';
+  }
 }
 
 // Nome da loja ("CAÇAROLA STONEFLON GRANITO NÚMERO 28 MTA*8433") no formato
@@ -280,9 +301,12 @@ async function abrirPagina(navegador, url, log, diagnostico) {
       );
       if (contarProdutos(stdout) === null) {
         if (diagnostico) await writeFile(diagnostico, stdout);
-        throw new Error(
-          `a página não mostra "Produtos encontrados" (${stdout.length} bytes; ${descreverPagina(stdout)})`,
-        );
+        // "Evento não encontrado" é resposta da loja, não falha: não adianta insistir.
+        if (!listaEncerrada(stdout)) {
+          throw new Error(
+            `a página não mostra "Produtos encontrados" (${stdout.length} bytes; ${descreverPagina(stdout)})`,
+          );
+        }
       }
       return stdout;
     } catch (erro) {
@@ -299,6 +323,7 @@ async function lerListaCompleta({ navegador, html, conhecidos, log, diagnostico 
     const url = urlDaLista(tamanho);
     log(`Lendo ${url}`);
     const pagina = html ?? (await abrirPagina(navegador, url, log, diagnostico));
+    if (listaEncerrada(pagina)) throw new ListaEncerrada(url);
     const total = contarProdutos(pagina);
     if (total === null) throw new Error(`"Produtos encontrados" não aparece em ${url}: o layout da loja mudou?`);
     const lidos = lerItens(pagina, url, conhecidos);
@@ -365,6 +390,11 @@ async function principal() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   principal().catch((erro) => {
+    // Lista encerrada não é erro do script: quem chama decide o que fazer.
+    if (erro instanceof ListaEncerrada) {
+      console.log(erro.message);
+      process.exit(3);
+    }
     console.error(`::error::${erro.message}`);
     process.exit(1);
   });

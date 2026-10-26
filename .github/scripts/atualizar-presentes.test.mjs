@@ -13,6 +13,7 @@ import {
   descreverPagina,
   embelezarNome,
   lerItens,
+  listaEncerrada,
   montarFeed,
   urlDaLista,
   validarFeed,
@@ -22,6 +23,9 @@ const aqui = path.dirname(fileURLToPath(import.meta.url));
 // Trecho real da página da loja, com um presente já comprado (cinza, sem link).
 const FIXTURE = path.join(aqui, 'fixtures', 'lista-afubra.html');
 const html = await readFile(FIXTURE, 'utf8');
+// O que a loja mostra no lugar da lista depois de tirá-la do ar.
+const ENCERRADA = path.join(aqui, 'fixtures', 'lista-encerrada.html');
+const htmlEncerrada = await readFile(ENCERRADA, 'utf8');
 const base = urlDaLista(96);
 
 test('lê todos os blocos, inclusive o comprado sem link', () => {
@@ -116,6 +120,14 @@ test('página que não é a lista é descrita pelo título e pelo texto visível
   assert.match(descreverPagina(`<body>${'a'.repeat(500)}</body>`, 10), /texto "a{10}…"$/);
 });
 
+test('"Evento não encontrado" é a lista encerrada, e não layout novo', () => {
+  assert.equal(listaEncerrada(htmlEncerrada), true);
+  assert.equal(listaEncerrada(html), false);
+  // Outra página sem a lista (erro, bloqueio) continua sendo falha.
+  assert.equal(listaEncerrada('<body><h1>Erro 503</h1></body>'), false);
+  assert.match(descreverPagina(htmlEncerrada), /texto "energia solar .* Evento não encontrado\. Retorne e tente novamente\."$/);
+});
+
 test('validação barra lista vazia e preço fora do formato', () => {
   assert.deepEqual(validarFeed(montarFeed({ itens: [], fonte: base })), [
     'nenhum presente lido: o layout da loja mudou?',
@@ -142,4 +154,17 @@ test('linha de comando gera um feed no formato que o guia carrega', async () => 
   ]);
   assert.deepEqual(feed.totals, { requested: 3, purchased: 1 });
   assert.equal(feed.itemCount, 3);
+});
+
+test('linha de comando sai com 3 e não escreve o feed quando a loja encerrou a lista', async () => {
+  const pasta = await mkdtemp(path.join(tmpdir(), 'presentes-'));
+  const saida = path.join(pasta, 'gift-feed.json');
+  const erro = await promisify(execFile)(process.execPath, [
+    path.join(aqui, 'atualizar-presentes.mjs'),
+    '--html', ENCERRADA,
+    '--saida', saida,
+  ]).then(() => null, (e) => e);
+  assert.equal(erro?.code, 3);
+  assert.match(erro.stdout, /a loja encerrou a lista/);
+  await assert.rejects(readFile(saida), { code: 'ENOENT' });
 });
